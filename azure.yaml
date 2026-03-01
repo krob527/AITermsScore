@@ -1,0 +1,13 @@
+# Azure Developer CLI configuration
+# Run `azd up` to provision infrastructure and deploy the app.
+name: getaitermscore
+
+services:
+  web:
+    project: .
+    language: py
+    host: appservice
+
+infra:
+  provider: bicep
+  path: infra

@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+
+# Azure Developer CLI – env-specific files contain deployed resource IDs
+.azure/**/.env
+.azure/**/config.json
+
+# Output scorecards (keep the folder, not committed results)
+output/*.md
+output/*.json
+output/*.html
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

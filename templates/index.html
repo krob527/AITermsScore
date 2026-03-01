@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en" translate="no">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="google" content="notranslate" />
+  <title>AITermsScore – AI Legal Terms Analyzer</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+  <style>
+    /* ── Design tokens ─────────────────────────────────────────────────────── */
+    :root {
+      --bg:       #0f1117;
+      --surface:  #1a1d27;
+      --surface2: #222636;
+      --border:   #2e3247;
+      --accent:   #4f8ef7;
+      --accent2:  #7c5cbf;
+      --text:     #e2e8f0;
+      --muted:    #8892a4;
+      --good:     #34d399;
+      --warn:     #fbbf24;
+      --bad:      #f87171;
+      --radius:   .75rem;
+      --shadow:   0 4px 24px rgba(0,0,0,.4);
+    }
+
+    /* ── Base ───────────────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    /* ── Layout ─────────────────────────────────────────────────────────────── */
+    .page { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+    header {
+      text-align: center;
+      padding: 3rem 1rem 2.5rem;
+      background: linear-gradient(135deg, #1a1d27 0%, #0f1117 100%);
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 2.5rem;
+    }
+    header h1 {
+      font-size: 2.4rem;
+      font-weight: 800;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      letter-spacing: -.02em;
+    }
+    header p { color: var(--muted); margin-top: .5rem; font-size: 1.05rem; }
+
+    /* ── Card ───────────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.75rem;
+      box-shadow: var(--shadow);
+    }
+
+    /* ── Form ───────────────────────────────────────────────────────────────── */
+    .form-grid { display: grid; grid-template-columns: 1fr auto auto; gap: .75rem; align-items: end; }
+    @media (max-width: 600px) { .form-grid { grid-template-columns: 1fr; } }
+
+    .field label { display: block; font-size: .8rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: .4rem; }
+    .field input {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: .5rem;
+      color: var(--text);
+      font-size: 1rem;
+      padding: .65rem 1rem;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .field input:focus { border-color: var(--accent); }
+    .field input::placeholder { color: var(--muted); }
+
+    button {
+      cursor: pointer;
+      border: none;
+      border-radius: .5rem;
+      font-size: 1rem;
+      font-weight: 600;
+      padding: .65rem 1.6rem;
+      transition: opacity .15s, transform .1s;
+    }
+    button:active { transform: scale(.97); }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+    .btn-secondary { background: var(--surface2); border: 1px solid var(--border); color: var(--text); }
+
+    /* ── Progress ───────────────────────────────────────────────────────────── */
+    #progress-section { margin-top: 1.5rem; display: none; }
+    .progress-bar-wrap {
+      background: var(--surface2);
+      border-radius: 999px;
+      height: 6px;
+      overflow: hidden;
+      margin-bottom: 1rem;
+    }
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      border-radius: 999px;
+      transition: width .5s ease;
+    }
+    .progress-bar.indeterminate {
+      width: 40% !important;
+      animation: slide 1.4s ease-in-out infinite;
+    }
+    @keyframes slide {
+      0%   { transform: translateX(-120%); }
+      100% { transform: translateX(350%); }
+    }
+    .log { background: var(--surface2); border-radius: .5rem; padding: .75rem 1rem;
+      font-family: "Cascadia Code", "Fira Code", monospace; font-size: .82rem;
+      color: var(--muted); max-height: 140px; overflow-y: auto; }
+    .log-line { padding: .1rem 0; }
+    .log-line.error { color: var(--bad); }
+
+    /* ── Scorecard ──────────────────────────────────────────────────────────── */
+    #scorecard { display: none; margin-top: 2rem; }
+
+    .scorecard-header {
+      display: flex; align-items: center; gap: 1rem;
+      flex-wrap: wrap; margin-bottom: 1.5rem;
+    }
+    .scorecard-header h2 { font-size: 1.6rem; font-weight: 700; }
+    .scorecard-header .meta { color: var(--muted); font-size: .9rem; }
+
+    /* Grade badge */
+    .grade-badge {
+      display: flex; align-items: center; justify-content: center;
+      width: 5rem; height: 5rem; border-radius: 50%;
+      font-size: 2rem; font-weight: 900;
+      flex-shrink: 0;
+      border: 3px solid;
+      box-shadow: 0 0 20px rgba(0,0,0,.5);
+    }
+    .grade-A { border-color: var(--good);  color: var(--good);  background: rgba(52,211,153,.1); }
+    .grade-B { border-color: #6ee7b7;      color: #6ee7b7;      background: rgba(110,231,183,.1); }
+    .grade-C { border-color: var(--warn);  color: var(--warn);  background: rgba(251,191,36,.1); }
+    .grade-D { border-color: #fb923c;      color: #fb923c;      background: rgba(251,146,60,.1); }
+    .grade-F { border-color: var(--bad);   color: var(--bad);   background: rgba(248,113,113,.1); }
+    .grade-  { border-color: var(--muted); color: var(--muted); background: rgba(136,146,164,.1); }
+
+    /* Two-column layout: chart + grid */
+    .scorecard-body { display: grid; grid-template-columns: 380px 1fr; gap: 1.5rem; }
+    @media (max-width: 820px) { .scorecard-body { grid-template-columns: 1fr; } }
+
+    .chart-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 360px;
+    }
+    canvas#radarChart { max-width: 340px; max-height: 340px; }
+
+    /* Score grid */
+    .scores-grid { display: flex; flex-direction: column; gap: .6rem; }
+    .score-row {
+      display: grid;
+      grid-template-columns: 1fr 3rem auto;
+      align-items: start;
+      gap: .75rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: .5rem;
+      padding: .65rem .9rem;
+    }
+    .score-label { font-size: .88rem; font-weight: 600; }
+    .score-num {
+      font-size: 1.1rem;
+      font-weight: 800;
+      text-align: center;
+    }
+    .score-notes { font-size: .78rem; color: var(--muted); grid-column: 1/-1; margin-top: .15rem; }
+    .score-bar-wrap { grid-column: 1/-1; background: var(--border); border-radius: 999px; height: 4px; margin-top: .35rem; }
+    .score-bar-fill { height: 100%; border-radius: 999px; transition: width .6s ease; }
+
+    .col-good  { color: var(--good); }
+    .col-warn  { color: var(--warn); }
+    .col-bad   { color: var(--bad);  }
+    .fill-good { background: var(--good); }
+    .fill-warn { background: var(--warn); }
+    .fill-bad  { background: var(--bad);  }
+
+    /* Overall score row */
+    .overall-row {
+      background: var(--surface);
+      border: 2px solid var(--accent);
+      border-radius: var(--radius);
+      padding: 1rem 1.25rem;
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: .75rem;
+    }
+    .overall-row .label { font-size: .9rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+    .overall-score { font-size: 2rem; font-weight: 900; color: var(--accent); }
+
+    /* Full report */
+    .report-section { margin-top: 2rem; }
+    .report-section h3 { font-size: 1.1rem; font-weight: 700; margin-bottom: .75rem;
+      color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+    .report-body {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.5rem 1.75rem;
+      max-height: 500px;
+      overflow-y: auto;
+      font-size: .9rem;
+      line-height: 1.8;
+    }
+    .report-body h1, .report-body h2, .report-body h3 { 
+      color: var(--accent); margin: 1.25rem 0 .5rem; }
+    .report-body h1 { font-size: 1.3rem; }
+    .report-body h2 { font-size: 1.1rem; }
+    .report-body h3 { font-size: .95rem; }
+    .report-body p  { margin: .5rem 0; color: var(--text); }
+    .report-body ul, .report-body ol { padding-left: 1.5rem; margin: .5rem 0; }
+    .report-body li { margin: .2rem 0; color: var(--text); }
+    .report-body strong { color: #fff; }
+    .report-body code { 
+      background: var(--surface2); border-radius: .25rem;
+      padding: .1rem .35rem; font-size: .82rem; color: #c9d1d9; }
+    .report-body pre { 
+      background: var(--surface2); border-radius: .5rem;
+      padding: 1rem; overflow-x: auto; margin: .75rem 0; }
+    .report-body pre code { padding: 0; background: none; }
+    .report-body table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+    .report-body th, .report-body td { 
+      border: 1px solid var(--border); padding: .45rem .7rem; text-align: left; }
+    .report-body th { background: var(--surface2); font-weight: 600; }
+    .report-body a { color: var(--accent); }
+
+    /* Error box */
+    .error-box {
+      background: rgba(248,113,113,.1);
+      border: 1px solid var(--bad);
+      border-radius: var(--radius);
+      padding: 1rem 1.25rem;
+      color: var(--bad);
+      margin-top: 1rem;
+      display: none;
+    }
+
+    footer { text-align: center; color: var(--muted); font-size: .8rem;
+      padding: 2.5rem 0 1.5rem; }
+    .disclaimer {
+      max-width: 780px;
+      margin: 0 auto 0.75rem;
+      padding: 1rem 1.25rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--card);
+      text-align: left;
+      font-size: .78rem;
+      line-height: 1.55;
+      color: var(--muted);
+    }
+    .disclaimer strong { display: block; margin-bottom: .35rem; font-size: .82rem; color: var(--text); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="page">
+    <h1>AITermsScore</h1>
+    <p>Evaluate AI vendor legal documents against an enterprise risk rubric</p>
+  </div>
+</header>
+
+<div class="page">
+
+  <!-- ── Input form ────────────────────────────────────────── -->
+  <div class="card">
+    <div class="form-grid">
+      <div class="field" style="grid-column:1/-1">
+        <label for="product">AI Product / Service</label>
+        <input id="product" type="text" placeholder="e.g. OpenAI ChatGPT, Google Gemini, Anthropic Claude…" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="vendor">Vendor <span style="font-weight:400;text-transform:none">(optional)</span></label>
+        <input id="vendor" type="text" placeholder="e.g. openai, google, anthropic" autocomplete="off" />
+      </div>
+      <button class="btn-primary" id="runBtn" onclick="startScore()">Analyze</button>
+      <button class="btn-secondary" id="resetBtn" onclick="resetUI()" style="display:none">Reset</button>
+    </div>
+
+    <!-- Progress -->
+    <div id="progress-section">
+      <div style="margin: 1rem 0 .5rem; display:flex; justify-content:space-between; align-items:center;">
+        <span id="status-text" style="font-size:.9rem; color:var(--muted)">Starting…</span>
+      </div>
+      <div class="progress-bar-wrap">
+        <div class="progress-bar indeterminate" id="progressBar"></div>
+      </div>
+      <div class="log" id="logBox"></div>
+    </div>
+
+    <div class="error-box" id="errorBox"></div>
+  </div>
+
+  <!-- ── Scorecard ─────────────────────────────────────────── -->
+  <div id="scorecard">
+
+    <div class="scorecard-header">
+      <div class="grade-badge grade-" id="gradeBadge">–</div>
+      <div>
+        <h2 id="scorecardTitle">Scorecard</h2>
+        <div class="meta" id="scorecardMeta"></div>
+      </div>
+    </div>
+
+    <div class="scorecard-body">
+
+      <!-- Radar chart -->
+      <div class="chart-wrap">
+        <canvas id="radarChart"></canvas>
+      </div>
+
+      <!-- Score rows -->
+      <div>
+        <div class="scores-grid" id="scoresGrid"></div>
+        <div class="overall-row" id="overallRow" style="display:none">
+          <span class="label">Overall Score</span>
+          <span class="overall-score" id="overallScore">–</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Full markdown report -->
+    <div class="report-section">
+      <h3>Full Report</h3>
+      <div class="report-body" id="reportBody"></div>
+    </div>
+
+  </div>
+
+</div>
+
+<footer>
+  <div class="disclaimer">
+    <strong>Disclaimer</strong>
+    The information provided on this website is for informational and educational purposes only and does not constitute legal advice.
+    No attorney&#8209;client relationship is created by the use of this site.<br><br>
+    This content is generated and assisted by artificial intelligence and may contain errors, omissions, or inaccuracies.
+    While reasonable efforts are made to ensure transparency and accuracy, the information is provided &ldquo;as is&rdquo; and
+    should not be relied upon as a substitute for professional legal, compliance, or regulatory advice.
+    Users are encouraged to consult qualified legal counsel before making decisions based on this content.
+  </div>
+  AITermsScore &bull; Powered by Azure AI Foundry &amp; DuckDuckGo Search
+</footer>
+
+<script>
+// ── Rubric dimension mapping ──────────────────────────────────────────────────
+// Maps flexible LLM key names to canonical short labels for the radar chart.
+const DIMENSIONS = [
+  { key: ["data_ownership", "data_ownership_control", "ownership", "D1"], label: "Data Ownership" },
+  { key: ["training", "training_model", "training_usage", "model_improvement", "D2"], label: "Training Usage" },
+  { key: ["retention", "data_retention", "deletion", "residency", "D3"], label: "Retention & Deletion" },
+  { key: ["security", "security_controls", "safeguards", "D4"], label: "Security Controls" },
+  { key: ["privacy", "privacy_protections", "pii", "pii_handling", "D5"], label: "Privacy & PII" },
+  { key: ["third_party", "subprocessor", "sub_processor", "third_party_risk", "D6"], label: "Third-Party Risk" },
+  { key: ["liability", "legal_accountability", "legal_liability", "D7"], label: "Legal Liability" },
+  { key: ["transparency", "auditability", "transparency_auditability", "D8"], label: "Transparency" },
+];
+
+const MAX_SCORE = 5; // rubric scale is 0–5
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function scoreColor(s) {
+  const n = parseFloat(s);
+  if (isNaN(n)) return "col-warn";
+  if (n >= 3.5) return "col-good";
+  if (n >= 2)   return "col-warn";
+  return "col-bad";
+}
+function fillColor(s) {
+  const n = parseFloat(s);
+  if (isNaN(n)) return "fill-warn";
+  if (n >= 3.5) return "fill-good";
+  if (n >= 2)   return "fill-warn";
+  return "fill-bad";
+}
+function gradeFromScore(overall) {
+  if (overall >= 4.5) return "A";
+  if (overall >= 3.8) return "B";
+  if (overall >= 3.0) return "C";
+  if (overall >= 2.0) return "D";
+  return "F";
+}
+
+let radarChart = null;
+
+// ── matchDimension – fuzzy lookup by key ──────────────────────────────────────
+function matchDimension(rawKey) {
+  const k = rawKey.toLowerCase().replace(/[^a-z0-9]/g, "_");
+  for (const dim of DIMENSIONS) {
+    for (const alias of dim.key) {
+      if (k.includes(alias.toLowerCase()) || alias.toLowerCase().includes(k)) {
+        return dim.label;
+      }
+    }
+  }
+  return null;
+}
+
+// ── extractScores ──────────────────────────────────────────────────────────────
+// Returns { label: { score, notes } } from the structured JSON blob.
+function extractScores(structured) {
+  const out = {};
+  if (!structured || typeof structured !== "object") return out;
+  for (const [k, v] of Object.entries(structured)) {
+    if (k === "overall" || k === "metadata") continue;
+    const label = matchDimension(k) || k.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+    let score = null, notes = "";
+    if (typeof v === "number") {
+      score = v;
+    } else if (v && typeof v === "object") {
+      score = v.score ?? v.value ?? v.rating ?? null;
+      notes = v.notes ?? v.rationale ?? v.reason ?? "";
+    }
+    if (score !== null) {
+      out[label] = { score: parseFloat(score), notes: String(notes).slice(0, 180) };
+    }
+  }
+  return out;
+}
+
+// ── radarData – map scores to 8 dimension slots ───────────────────────────────
+function radarData(scores) {
+  return DIMENSIONS.map(dim => {
+    // direct canonical label match first
+    if (scores[dim.label] !== undefined) return scores[dim.label].score;
+    // fallback: check all score keys for keyword overlap
+    for (const [label, v] of Object.entries(scores)) {
+      const cleaned = label.toLowerCase().replace(/[^a-z]/g, "");
+      if (dim.key.some(k => cleaned.includes(k.replace(/[^a-z]/g, "")))) {
+        return v.score;
+      }
+    }
+    return null;
+  });
+}
+
+// ── renderScorecard ────────────────────────────────────────────────────────────
+function renderScorecard(result) {
+  document.getElementById("scorecardTitle").textContent = result.product_name;
+  document.getElementById("scorecardMeta").innerHTML =
+    `Vendor: <strong>${result.vendor || "–"}</strong> &bull; Run: ${result.run_id || "–"}`;
+
+  const structured = result.structured || {};
+  const scores = extractScores(structured);
+
+  // Prefer the guaranteed top-level overall_score; fall back to structured.overall;
+  // last resort: compute average of dimension scores.
+  // Use parseFloat() so numeric strings ("3.5") and actual numbers both work.
+  let overallForGrade = parseFloat(result.overall_score);
+  if (isNaN(overallForGrade)) overallForGrade = parseFloat(structured.overall);
+  if (isNaN(overallForGrade)) {
+    const vals = Object.values(scores).map(v => v.score).filter(n => typeof n === "number" && !isNaN(n));
+    overallForGrade = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : NaN;
+  }
+
+  // Grade badge
+  const grade = (overallForGrade !== null) ? gradeFromScore(overallForGrade) : "";
+  const badge = document.getElementById("gradeBadge");
+  badge.textContent = grade || "?";
+  badge.className = `grade-badge grade-${grade}`;
+
+  // Overall row – always visible; show computed value or dash
+  document.getElementById("overallRow").style.display = "flex";
+  document.getElementById("overallScore").textContent =
+    !isNaN(overallForGrade)
+      ? overallForGrade.toFixed(1) + " / " + MAX_SCORE
+      : "–";
+
+  // Score rows
+  const grid = document.getElementById("scoresGrid");
+  grid.innerHTML = "";
+  if (Object.keys(scores).length > 0) {
+    for (const [label, { score, notes }] of Object.entries(scores)) {
+      const pct = Math.min((score / MAX_SCORE) * 100, 100);
+      const row = document.createElement("div");
+      row.className = "score-row";
+      row.innerHTML = `
+        <span class="score-label">${label}</span>
+        <span class="score-num ${scoreColor(score)}">${score}</span>
+        <span style="font-size:.75rem;color:var(--muted);text-align:right">/ ${MAX_SCORE}</span>
+        ${notes ? `<span class="score-notes">${notes}</span>` : ""}
+        <div class="score-bar-wrap">
+          <div class="score-bar-fill ${fillColor(score)}" style="width:${pct}%"></div>
+        </div>`;
+      grid.appendChild(row);
+    }
+  } else {
+    grid.innerHTML = `<p style="color:var(--muted);font-size:.9rem">
+      No structured numeric scores found in the response.<br>
+      See the full report below for the extracted analysis.
+    </p>`;
+  }
+
+  // Radar chart
+  const radarValues = radarData(scores);
+  const hasRadarData = radarValues.some(v => v !== null);
+  if (radarChart) { radarChart.destroy(); radarChart = null; }
+  if (hasRadarData) {
+    const ctx = document.getElementById("radarChart").getContext("2d");
+    radarChart = new Chart(ctx, {
+      type: "radar",
+      data: {
+        labels: DIMENSIONS.map(d => d.label),
+        datasets: [{
+          label: result.product_name,
+          data: radarValues.map(v => v ?? 0),
+          backgroundColor: "rgba(79,142,247,.15)",
+          borderColor: "#4f8ef7",
+          borderWidth: 2,
+          pointBackgroundColor: radarValues.map(v =>
+            v === null ? "#555" : v >= 3.5 ? "#34d399" : v >= 2 ? "#fbbf24" : "#f87171"
+          ),
+          pointRadius: 5,
+          pointHoverRadius: 7,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        scales: {
+          r: {
+            min: 0, max: MAX_SCORE,
+            ticks: { stepSize: 1, color: "#8892a4", backdropColor: "transparent", font: { size: 10 } },
+            grid: { color: "#2e3247" },
+            angleLines: { color: "#2e3247" },
+            pointLabels: { color: "#c9d1d9", font: { size: 11 } }
+          }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: ctx => ` ${ctx.raw} / ${MAX_SCORE}`
+            }
+          }
+        }
+      }
+    });
+  } else {
+    document.querySelector(".chart-wrap").innerHTML =
+      `<p style="color:var(--muted);text-align:center;font-size:.9rem">
+        Radar chart unavailable – scores not mapped to rubric dimensions.
+      </p>`;
+  }
+
+  // Full markdown report
+  if (typeof marked !== "undefined" && result.raw_markdown) {
+    // Strip trailing ```json ... ``` block – it's already shown in the scorecard UI
+    const reportMd = result.raw_markdown.replace(/```json[\s\S]*?```\s*$/i, "").trimEnd();
+    document.getElementById("reportBody").innerHTML = marked.parse(reportMd);
+  } else {
+    const reportMd = (result.raw_markdown || "").replace(/```json[\s\S]*?```\s*$/i, "").trimEnd();
+    document.getElementById("reportBody").textContent = reportMd;
+  }
+
+  document.getElementById("scorecard").style.display = "block";
+  document.getElementById("scorecard").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// ── UI state ──────────────────────────────────────────────────────────────────
+let progressSteps = 0;
+
+function logLine(msg, cls) {
+  const box = document.getElementById("logBox");
+  const div = document.createElement("div");
+  div.className = "log-line" + (cls ? " " + cls : "");
+  div.textContent = "› " + msg;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  document.getElementById("status-text").textContent = msg;
+}
+
+function setProgress(pct) {
+  const bar = document.getElementById("progressBar");
+  bar.classList.remove("indeterminate");
+  bar.style.width = pct + "%";
+}
+
+function startScore() {
+  const product = document.getElementById("product").value.trim();
+  if (!product) {
+    document.getElementById("product").focus();
+    return;
+  }
+  const vendor = document.getElementById("vendor").value.trim();
+
+  // Reset UI
+  document.getElementById("scorecard").style.display = "none";
+  document.getElementById("scoresGrid").innerHTML = "";
+  document.getElementById("overallRow").style.display = "none";
+  document.getElementById("logBox").innerHTML = "";
+  document.getElementById("errorBox").style.display = "none";
+  document.getElementById("progressBar").className = "progress-bar indeterminate";
+  document.getElementById("progress-section").style.display = "block";
+  document.getElementById("runBtn").disabled = true;
+  document.getElementById("resetBtn").style.display = "none";
+  progressSteps = 0;
+
+  fetch("/score", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ product_name: product, vendor }),
+  })
+  .then(r => r.json())
+  .then(({ job_id, error }) => {
+    if (error) { showError(error); return; }
+    streamJob(job_id);
+  })
+  .catch(e => showError(e.message));
+}
+
+function streamJob(jobId) {
+  const es = new EventSource(`/stream/${jobId}`);
+  const steps = ["Loading configuration", "Connecting", "Agent ready", "Searching", "Writing"];
+  let stepIdx = 0;
+
+  es.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.type === "heartbeat") return;
+    if (data.type === "status") {
+      logLine(data.message);
+      stepIdx = Math.min(stepIdx + 1, steps.length);
+      setProgress(Math.round((stepIdx / steps.length) * 90));
+    }
+    if (data.type === "done") {
+      setProgress(100);
+      logLine("Complete!", null);
+      es.close();
+      document.getElementById("runBtn").disabled = false;
+      document.getElementById("resetBtn").style.display = "";
+      setTimeout(() => renderScorecard(data.result), 300);
+    }
+    if (data.type === "error") {
+      es.close();
+      showError(data.message);
+    }
+  };
+  es.onerror = () => { es.close(); showError("Connection to server lost."); };
+}
+
+function showError(msg) {
+  const box = document.getElementById("errorBox");
+  box.textContent = "Error: " + msg;
+  box.style.display = "block";
+  document.getElementById("progressBar").className = "progress-bar";
+  document.getElementById("progressBar").style.width = "0%";
+  document.getElementById("runBtn").disabled = false;
+  document.getElementById("resetBtn").style.display = "";
+  logLine(msg, "error");
+}
+
+function resetUI() {
+  document.getElementById("progress-section").style.display = "none";
+  document.getElementById("scorecard").style.display = "none";
+  document.getElementById("errorBox").style.display = "none";
+  document.getElementById("resetBtn").style.display = "none";
+  document.getElementById("product").value = "";
+  document.getElementById("vendor").value = "";
+  document.getElementById("product").focus();
+}
+
+document.getElementById("product").addEventListener("keydown", e => {
+  if (e.key === "Enter") startScore();
+});
+</script>
+</body>
+</html>
