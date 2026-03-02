@@ -1,16 +1,40 @@
-# getAITermsScore
+# AITermsScore
 
 > **Built for the Microsoft Agent League competition.**
 
-getAITermsScore is a web application that automatically evaluates the legal documents of AI products — Terms of Service, Privacy Policies, Data Processing Agreements, and Acceptable Use Policies — and produces a structured, scored risk assessment.
+## The Problem
 
-A user enters an AI product name in the browser. The app spins up an **Azure AI Foundry Agent** backed by **GPT-4.1** that searches the web for the vendor's current legal documents using **DuckDuckGo**, scores them across multiple risk dimensions using a configurable rubric, and streams a live scorecard back to the browser. The result includes per-dimension scores (0–5), rationale, key findings, an overall risk score, and a full written report.
+AI vendors publish Terms of Service, Privacy Policies, Data Processing Agreements, and Acceptable Use Policies that routinely run to 50+ pages of dense legal language. Enterprises and individuals adopting AI tools are expected to accept these documents — yet almost no one reads them. Hidden inside are clauses that grant vendors broad rights to train on your data, limit liability to a fraction of fees paid, give 30-day notice for unilateral changes, and provide no audit rights whatsoever.
+
+**Most people click "I Agree" without knowing what they're agreeing to.**
+
+## What AITermsScore Does
+
+AITermsScore sends an AI agent to read those documents for you. Enter any AI product name in the browser. Within 2–3 minutes, the app returns a structured risk scorecard across 8 legal dimensions — rated 0–5, with citations from the actual documents — so you can compare vendors and understand your real exposure before signing up.
+
+No legal background required. No manual document hunting. Just a score you can act on.
 
 ---
 
+## Demo
+
+### 1. Enter a Model
+
+![Enter a model name to score](AITermsScore-EnterModel.gif)
+
+### 2. View the Score
+
+![Live scorecard streamed back to the browser](AITermsScore-ViewScore.gif)
+
+### 3. View the Details
+
+![Per-dimension breakdown with citations](AITermsScore-ViewDetails.gif)
+
 ---
 
-## How It Works
+## How It Works (Technical)
+
+An **Azure AI Foundry Agent** backed by **GPT-4.1** autonomously searches the web for the vendor's current legal documents using **DuckDuckGo**, applies a configurable risk rubric across 8 dimensions, and streams a live scorecard back to the browser via Server-Sent Events. The result includes per-dimension scores (0–5), rationale, key findings, a letter grade, and a full written report.
 
 ```
 Browser (index.html)
@@ -85,6 +109,7 @@ Copy-Item .env.example .env
 | `AZURE_AI_MODEL_DEPLOYMENT` | ✅ | AI Foundry portal → your project → **Deployments** → deployment name (e.g. `gpt-4.1`) |
 | `AGENT_NAME` | optional | Name to register the agent under. Defaults to `AITermsScoreAgent` |
 | `AGENT_ID` | optional | If set, the app skips all agent API calls and uses this ID directly. Recommended for App Service. |
+| `TRACE_SDK_CALLS` | optional | Set to `1` to emit per-call Azure SDK timing lines (e.g. `[trace] runs.get: 742 ms`) into the live status stream. Default `0`. |
 
 ### Run locally
 
@@ -153,6 +178,7 @@ az webapp config appsettings set \
     AZURE_AI_PROJECT_ENDPOINT="https://<hub>.services.ai.azure.com/api/projects/<project>" \
     AZURE_AI_MODEL_DEPLOYMENT="gpt-4.1" \
     AGENT_ID="<your-agent-id>" \
+    TRACE_SDK_CALLS="0" \
     WEBSITES_PORT="8000" \
     SCM_DO_BUILD_DURING_DEPLOYMENT="true"
 ```
@@ -162,6 +188,7 @@ az webapp config appsettings set \
 | `AZURE_AI_PROJECT_ENDPOINT` | AI Foundry project endpoint URL |
 | `AZURE_AI_MODEL_DEPLOYMENT` | Model deployment name |
 | `AGENT_ID` | Pre-registered agent ID — bypasses `list_agents` / `create_agent` API calls on startup. Find it in AI Foundry portal → your project → **Agents**. |
+| `TRACE_SDK_CALLS` | Optional diagnostics toggle. `1` adds SDK timing lines to SSE status output; `0` disables it. |
 | `WEBSITES_PORT` | Must be `8000` — tells App Service to route traffic to gunicorn's port |
 | `SCM_DO_BUILD_DURING_DEPLOYMENT` | Must be `true` — tells Oryx to run `pip install` at deploy time, not at cold-start |
 
@@ -200,6 +227,24 @@ az role assignment create \
 
 ```powershell
 azd deploy
+```
+
+### Optional diagnostics: trace Azure SDK timings
+
+Use this when debugging run latency or polling behavior.
+
+```powershell
+# Enable trace lines in SSE status stream
+az webapp config appsettings set \
+  --name <web-app-name> \
+  --resource-group <resource-group> \
+  --settings TRACE_SDK_CALLS="1"
+
+# Disable after troubleshooting
+az webapp config appsettings set \
+  --name <web-app-name> \
+  --resource-group <resource-group> \
+  --settings TRACE_SDK_CALLS="0"
 ```
 
 ---

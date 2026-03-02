@@ -16,6 +16,9 @@ param azureAiModelDeployment string = 'gpt-4.1'
 @description('App Service Plan SKU. B1 = Basic (recommended); F1 = Free (cold-start issues).')
 param appServicePlanSku string = 'B1'
 
+@description('Pre-registered AI Foundry agent ID. When set, bypasses list_agents/create_agent at startup.')
+param agentId string = ''
+
 // ── Variables ──────────────────────────────────────────────────────────────────
 var suffix         = uniqueString(resourceGroup().id)
 var webAppName     = 'aiterms-${suffix}'
@@ -84,6 +87,7 @@ resource webApp 'Microsoft.Web/sites@2023-01-01' = {
         { name: 'AZURE_AI_PROJECT_ENDPOINT',            value: azureAiProjectEndpoint }
         { name: 'AZURE_AI_MODEL_DEPLOYMENT',             value: azureAiModelDeployment }
         { name: 'AGENT_NAME',                            value: 'AITermsScoreAgent' }
+        { name: 'AGENT_ID',                              value: agentId }
         { name: 'APPINSIGHTS_INSTRUMENTATIONKEY',        value: appInsights.properties.InstrumentationKey }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
         { name: 'SCM_DO_BUILD_DURING_DEPLOYMENT',        value: 'true' }

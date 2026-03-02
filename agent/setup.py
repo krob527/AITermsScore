@@ -19,8 +19,13 @@ from azure.ai.agents.models import (
     FunctionTool,
     ToolSet,
 )
+from azure.core.pipeline.transport import RequestsTransport
 from azure.identity import DefaultAzureCredential
 from ddgs import DDGS
+
+# Per-request HTTP timeouts for all Azure AI Foundry API calls.
+# Prevents individual SDK calls from blocking indefinitely on slow/stuck connections.
+_AZURE_TRANSPORT = RequestsTransport(connection_timeout=30, read_timeout=60)
 
 from config import AppConfig
 
@@ -32,7 +37,7 @@ def web_search(query: str) -> str:
     :param query: The search query string to look up on the web.
     :return: A formatted string containing titles, URLs, and snippets from the top results.
     """
-    results = list(DDGS().text(query, max_results=8))
+    results = list(DDGS(timeout=10).text(query, max_results=8))
     if not results:
         return "No results found."
     lines = []
@@ -138,6 +143,7 @@ def get_or_create_agent(cfg: AppConfig) -> tuple[AgentsClient, Agent]:
     agents_client = AgentsClient(
         endpoint=cfg.project_endpoint,
         credential=credential,
+        transport=_AZURE_TRANSPORT,
     )
 
     # Read system prompt and rubric from local files
@@ -147,10 +153,13 @@ def get_or_create_agent(cfg: AppConfig) -> tuple[AgentsClient, Agent]:
     # Embed the rubric directly into the system prompt
     full_instructions = f"{system_prompt}\n\n---\n## RUBRIC\n\n{rubric_text}"
 
-    # Build DuckDuckGo search toolset and enable auto-execution of function calls
+    # Build DuckDuckGo search toolset for agent registration
+    # NOTE: do NOT call enable_auto_function_calls() here – runner.py handles
+    # tool execution manually via a polling loop + submit_tool_outputs().
+    # Calling enable_auto_function_calls() would intercept REQUIRES_ACTION
+    # responses at the SDK layer, preventing the runner's loop from ever firing.
     toolset = ToolSet()
     toolset.add(FunctionTool({web_search}))
-    agents_client.enable_auto_function_calls(toolset)
 
     # --- Fast path: AGENT_ID env var is set (App Service / CI) ---------------
     # Construct a lightweight stub so zero API calls are made during setup.
@@ -192,6 +201,7 @@ def delete_agent(cfg: AppConfig) -> None:
     agents_client = AgentsClient(
         endpoint=cfg.project_endpoint,
         credential=credential,
+        transport=_AZURE_TRANSPORT,
     )
     for a in agents_client.list_agents():
         if a.name == cfg.agent_name:

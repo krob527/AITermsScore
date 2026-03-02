@@ -13,6 +13,9 @@
     },
     "azureAiModelDeployment": {
       "value": "${AZURE_AI_MODEL_DEPLOYMENT}"
+    },
+    "agentId": {
+      "value": "${AGENT_ID}"
     }
   }
 }

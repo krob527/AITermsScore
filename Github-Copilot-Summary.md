@@ -114,6 +114,222 @@ This phase covers the work done before Azure deployment — getting the tool run
 
 ---
 
+### 11. README — Demo GIF Embed
+
+- Added a **Demo** section to `README.md` between "What AITermsScore Does" and "How It Works", embedding three screen-capture GIFs in sequence: `EnterModel` → `ViewScore` → `ViewDetails`.
+
+---
+
+### 12. Full Code Review & 11-Point Improvement Plan
+
+Copilot performed a structured review of all source files and scored the project **8.5 / 10**, identifying 11 concrete improvements across security, correctness, and reliability:
+
+| # | Area | Issue |
+|---|---|---|
+| 1 | Security | Job store (`_jobs`) is unbounded — memory leak under load |
+| 2 | Thread safety | `q` captured inside thread by closure over mutable dict |
+| 3 | Correctness | Duplicate `overall_score` calculation — `app.py` and `runner.py` both computed it |
+| 4 | Robustness | `DDGS()` had no timeout — could block indefinitely |
+| 5 | Security | No per-IP rate limiting on `/score` |
+| 6 | Security | No input length cap on `product_name` |
+| 7 | Reproducibility | `requirements.txt` used unpinned version ranges |
+| 8 | Dev hygiene | `.gitignore` missing pytest, coverage, and log entries |
+| 9 | Observability | No `/health` endpoint for App Service health checks |
+| 10 | UX | No deduplication — same product could queue multiple simultaneous runs |
+| 11 | Config | `.env.example` missing the `AGENT_ID` entry |
+
+All 11 were implemented in a single pass across `app.py`, `agent/setup.py`, `requirements.txt`, `.env.example`, and `.gitignore`.
+
+**Key changes:**
+- `app.py`: added `JOB_TTL_SECONDS = 600` eviction, `_inflight` dedup dict, per-IP rolling rate limiter (5 req / 60s), `MAX_PRODUCT_NAME_LEN = 200`, `/health` endpoint, thread-safe `q` parameter passing in `_run_score`.
+- `agent/setup.py`: `DDGS(timeout=10)`.
+- `requirements.txt`: all packages pinned to exact versions matching the venv.
+
+---
+
+### 13. Azure App Service Deployment
+
+- Ran `azd deploy` from the project directory; the app deployed successfully to `https://aiterms-miwtrptubqmqg.azurewebsites.net/` in ~2m 43s.
+
+---
+
+### 14. Production Hang — Round 1: Wall-Clock Timeout & Transport Timeouts
+
+User reported the app hanging after submitting a product name. Copilot diagnosed via live SSE stream (`curl --max-time 300 /stream/<id>`) and Azure App Service Docker logs:
+
+- **Historical red herring**: older Docker log files showed container startup timeouts (230s limit). The current deploy was actually starting in ~35s — not the cause.
+- **Root cause**: the polling loop in `agent/runner.py` used an `elapsed +=` accumulator to track timeout, but the blocking `client.runs.get()` HTTP call was consuming real wall-clock time that wasn't being counted.
+
+**Fixes applied:**
+1. `agent/runner.py` — replaced `elapsed +=` pattern with a `time.monotonic()` wall-clock deadline: `deadline = time.monotonic() + timeout`.
+2. `agent/setup.py` — added `RequestsTransport(connection_timeout=30, read_timeout=120)` and passed it as `transport=` to `AgentsClient`.
+3. `infra/main.bicep` — added optional `agentId` parameter wired to the `AGENT_ID` app setting so the zero-API-call fast path is always taken on App Service.
+
+Deployed via `azd deploy`.
+
+---
+
+### 15. Production Hang — Round 2: `enable_auto_function_calls` Conflict
+
+App was still timing out. New evidence from `curl` stream: status messages progressed through "Agent ready" and "Searching and scoring…" but then only heartbeats for ~270s before timeout — no tool-call status lines appearing.
+
+**Root cause:** `enable_auto_function_calls(toolset)` was still present in `agent/setup.py`. The Azure AI Agents SDK intercepts `REQUIRES_ACTION` run status at the transport layer when this is called — meaning the runner's manual `submit_tool_outputs` polling loop never fired, creating a deadlock.
+
+**Fix:** Removed the `enable_auto_function_calls()` call entirely. Added explanatory comment: *"runner.py handles tool execution manually via a polling loop + submit_tool_outputs(). Calling enable_auto_function_calls() would intercept REQUIRES_ACTION, preventing the runner's loop from ever firing."*
+
+Also reduced `read_timeout` from 120s → 60s since the manual loop now handles re-polling.
+
+Deployed via `azd deploy`.
+
+---
+
+### 16. Production Hang — Round 3: `runs.get()` Blocking Indefinitely — `concurrent.futures` Fix
+
+App still timed out after round 2 fix. SSE stream showed the same pattern: status through "Searching and scoring…" then 3 × 90s heartbeats (270s total) then curl exit code 1.
+
+**Root cause:** `client.runs.get()` itself was blocking for ~270s. The `RequestsTransport(read_timeout=60)` passed to `AgentsClient` was not being honoured by the SDK — `AgentsClient` does not propagate the `transport` kwarg to the underlying pipeline in `azure-ai-agents==1.1.0`.
+
+**Fix — transport-independent hard timeout using `concurrent.futures`:**
+
+Added a module-level `_sdk_call()` helper to `agent/runner.py` that wraps every blocking SDK call in a `ThreadPoolExecutor` with `Future.result(timeout=_SDK_CALL_TIMEOUT)` (45s). This is guaranteed to raise `RuntimeError` after 45s regardless of transport behaviour:
+
+```python
+_SDK_CALL_TIMEOUT = 45  # seconds
+
+def _sdk_call(fn: Callable, **kwargs):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn, **kwargs)
+        try:
+            return future.result(timeout=_SDK_CALL_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            raise RuntimeError(
+                f"Azure AI Foundry SDK call timed out after {_SDK_CALL_TIMEOUT}s "
+                f"({getattr(fn, '__qualname__', str(fn))}). "
+                "The service may be slow or unreachable."
+            )
+```
+
+All five SDK calls in `run_scoring` were updated to use `_sdk_call`:
+- `client.threads.create()`
+- `client.messages.create(...)`
+- `client.runs.create(...)`
+- `client.runs.get(...)` ← primary blocker
+- `client.runs.submit_tool_outputs(...)` ← also blocking
+- `client.messages.list(...)` ← added for completeness
+
+Deployed via `az webapp deploy --src-path deploy.zip --type zip` (used as fallback when `azd deploy` returned 409 Conflict due to a concurrent in-flight build).
+
+---
+
+### 17. Best-Practices Validation + Root-Cause Regression Fix
+
+After another timeout report, Copilot ran a best-practices validation pass and re-checked the polling control flow against live SSE evidence.
+
+- Initial hypothesis that runs were simply "slow" was challenged by observed behavior and prior known-good runtime.
+- Copilot then identified a concrete regression in status handling:
+  - polling loop comparisons relied on `str(run.status)` while expecting lowercase values like `"requires_action"`
+  - SDK values can appear as enum-like strings (e.g., `RunStatus.REQUIRES_ACTION`) and fail direct lowercase string checks
+
+**Fix applied in `agent/runner.py`:**
+- Added `_status_text()` normalization helper to canonicalize all statuses to lowercase text.
+- Updated all status checks to use `_status_text(...)`:
+  - loop terminal-state guard
+  - `requires_action` branch
+  - final completion guard
+
+**Result:** the manual tool loop resumed reliably; `Searching: ...` status lines returned and runs completed normally again.
+
+---
+
+### 18. Timeout Wrapper Correction (ThreadPool `with`-scope trap)
+
+Copilot identified a subtle bug in the first `concurrent.futures` timeout implementation:
+
+- Using `with ThreadPoolExecutor(...)` inside `_sdk_call()` can block on `__exit__` (`shutdown(wait=True)`) even after a `future.result(timeout=...)` timeout.
+- This can nullify the intended hard-timeout behavior.
+
+**Fix:** switched to a module-level shared executor (`_SDK_POOL`) so timed-out futures do not block the request path during executor teardown.
+
+---
+
+### 19. Runtime Observability Mode Added (Toggleable Trace)
+
+To make latency and polling behavior diagnosable without code changes, Copilot added a lightweight trace mode:
+
+- New env toggle: `TRACE_SDK_CALLS`
+  - `1` (or `true/yes/on`) enables trace lines in SSE
+  - `0` disables traces (default)
+- Added `_sdk_call_timed(...)` wrapper in `agent/runner.py`.
+- Emits per-call timing lines when enabled, e.g.:
+  - `[trace] threads.create: 865 ms`
+  - `[trace] runs.get: 738 ms`
+  - `[trace] runs.submit_tool_outputs: 1207 ms`
+- Kept periodic status ping (`Still running (...), <n>s elapsed…`) for user-visible liveness.
+
+This created an operational "diagnostics mode" for production without permanent noisy logs.
+
+---
+
+### 20. Verification Runs and Deployment Stability
+
+Copilot executed multiple post-fix end-to-end validations through `/score` + `/stream/<job_id>`.
+
+- Confirmed successful run completion with rich status events and final `done` payload (exit code 0) for both:
+  - `OpenAI ChatGPT`
+  - `Anthropic Claude`
+- Observed healthy, sub-second to low-second SDK polling timings in trace mode.
+
+During this cycle, one deploy attempt produced startup instability (`container exit code 127`) and temporary blocked site state; Copilot recovered by redeploying a clean package until runtime health was restored.
+
+---
+
+### 21. Repository Hygiene + Documentation Refresh
+
+Copilot performed a workspace cleanup pass and removed troubleshooting artifacts that were not required for project execution:
+
+- Removed root-level temporary/debug files and folders:
+  - `deploy.zip`
+  - `app_logs_latest.zip`
+  - `app_logs_latest/`
+  - root `__pycache__/`
+
+Copilot also updated `README.md` to document the retained trace capability:
+
+- Added `TRACE_SDK_CALLS` to local `.env` variable table.
+- Added `TRACE_SDK_CALLS` to Azure App Settings examples and reference table.
+- Added an "Optional diagnostics" section with explicit enable/disable commands.
+
+---
+
+### 22. Copilot Contribution Metrics (Time + Tokens)
+
+To answer "how much Copilot assisted in building the project," Copilot added a measurable contribution summary:
+
+**Estimated build contribution (engineering work):**
+- **Overall:** ~85–90%
+- **Core implementation/scaffolding:** ~90–95%
+- **Azure deployment + operations:** ~85–95%
+- **Debugging/reliability fixes:** ~85–90%
+- **Documentation authoring:** ~95%
+
+**Time metrics available from project artifacts:**
+- Persisted run artifact window (`output/*.json` timestamp prefixes):
+  - **First:** `2026-03-01T00:58:53Z`
+  - **Last:**  `2026-03-01T01:41:24Z`
+  - **Span:** **42m 31s**
+- Persisted model-run count in that window: **7 runs**
+
+**Token metrics status:**
+- Token usage metrics (`prompt_tokens`, `completion_tokens`, `total_tokens`) are **not currently persisted** in this project’s output schema.
+- Current run JSON files store: product/vendor, run/thread IDs, structured scores, and report markdown — but no SDK usage block.
+- Therefore, historical token totals for completed runs cannot be reconstructed exactly from existing files.
+
+**Recommendation for future metrics completeness:**
+- Capture and persist usage metadata from Azure AI Agents run/message responses into output JSON (prompt/completion/total tokens and elapsed runtime per run).
+- With this enabled, the project can report exact per-model token/time aggregates automatically.
+
+---
+
 ## Copilot Capabilities Used
 
 | Capability | How it was used |
